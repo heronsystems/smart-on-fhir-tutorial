@@ -17391,6 +17391,7 @@ BBClient.authorize = function(params, errback){
     params.provider = provider;
 
     var state = params.client.state || Guid.newGuid();
+    console.log("Setting State:", params.client.state, state);
     var client = params.client;
 
     if (params.provider.oauth2 == null) {
