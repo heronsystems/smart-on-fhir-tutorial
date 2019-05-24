@@ -17646,7 +17646,10 @@ var _guid = function () {
 var create = function () {
   var hasCrypto = typeof (window.crypto) != 'undefined',
   hasRandomValues = hasCrypto && typeof (window.crypto.getRandomValues) != 'undefined';
-  return (hasCrypto && hasRandomValues) ? _cryptoGuid() : _guid();
+	console.log("GUID create: ", hasCrypto);
+	var guid = (hasCrypto && hasRandomValues) ? _cryptoGuid() : _guid();
+	console.log("new GUID: ", guid);
+  return guid;
 };
 
 module.exports =  {
