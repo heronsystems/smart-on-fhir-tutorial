@@ -16976,7 +16976,7 @@ function completeCodeFlow(params){
   }
   
   var ret = Adapter.get().defer();
-  var state = JSON.parse(sessionStorage[JSON.stringify(params.state)]);
+  var state = JSON.parse(sessionStorage[params.state]);
 
   if (window.history.replaceState && BBClient.settings.replaceBrowserHistory){
     window.history.replaceState({}, "", window.location.toString().replace(window.location.search, ""));
