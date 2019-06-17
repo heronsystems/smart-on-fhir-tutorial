@@ -1,3 +1,4 @@
+// $lab:coverage:off$
 (function webpackUniversalModuleDefinition(root, factory) {
 	if(typeof exports === 'object' && typeof module === 'object')
 		module.exports = factory();
@@ -52,49 +53,110 @@ return /******/ (function(modules) { // webpackBootstrap
 /************************************************************************/
 /******/ ([
 /* 0 */
-/***/ function(module, exports, __webpack_require__) {
+/***/ (function(module, exports, __webpack_require__) {
 
-	(function() {
-	    var mkFhir = __webpack_require__(1);
-	    var jquery = window['_jQuery'] || window['jQuery'];
+	var mkFhir = __webpack_require__(1);
 
-	    var defer = function(){
-	        pr = jquery.Deferred();
-	        pr.promise = pr.promise();
-	        return pr;
-	    };
-	    var adapter = {
-	        defer: defer,
-	        http: function(args) {
-	            var ret = jquery.Deferred();
-	            var opts = {
-	                type: args.method,
-	                url: args.url,
-	                headers: args.headers,
-	                dataType: "json",
-	                contentType: "application/json",
-	                data: args.data || args.params,
-	                withCredentials: args.credentials === 'include',
-	            };
-	            jquery.ajax(opts)
-	                .done(function(data, status, xhr) {ret.resolve({data: data, status: status, headers: xhr.getResponseHeader, config: args});})
-	                .fail(function(err) {ret.reject({error: err, data: err, config: args});});
-	            return ret.promise();
-	        }
-	    };
+	// Fetch Helper JSON Parsing
+	function parseJSON(response) {
 
-	    var fhir = function(config) {
-	        return mkFhir(config, adapter);
-	    };
-	    fhir.defer = defer;
-	    module.exports = fhir;
+	  // response.json() throws on empty body
+	  return response.text()
+	  .then(function(text) {
+	    return text.length > 0 ? JSON.parse(text) : "";
+	  });
 
-	}).call(this);
+	}
+
+	// Fetch Helper for Status Codes
+	function checkStatus(httpResponse) {
+	  return new Promise(function (resolve, reject) {
+	    if (httpResponse.status < 200 || httpResponse.status > 399) {
+	      reject(httpResponse);
+	    }
+	    resolve(httpResponse);
+	  });
+	}
+
+	// Build a backwards compatiable defer object
+	var defer = function(){
+	  var def = {};
+	  def.promise = new Promise(function (resolve, reject) {
+	    def.resolve = resolve;
+	    def.reject = reject;
+	  });
+	  return def;
+	};
+
+	// Build Adapter Object
+	var adapter = {
+	  defer: defer,
+	  http: function (args) {
+	    var url = args.url;
+	    var debug = args.debug;
+
+	    // The arguments passed in aligh with the fetch option names.
+	    // There are are few extra values, but fetch will ignore them.
+	    var fetchOptions = args;
+
+	    // Pass along cookies
+	    fetchOptions.credentials = args.credentials || '';
+	    if (fetchOptions.credentials === '') {
+	      delete fetchOptions.credentials;
+	    }
+
+	    // data neeeds to map to body if data is populated and this is not a GET or HEAD request
+	    if (!['GET', 'HEAD'].includes(fetchOptions.method) && fetchOptions.data) {
+	      fetchOptions.body = fetchOptions.data;
+	    }
+
+	    debug && console.log("DEBUG[native](fetchOptions)", fetchOptions);
+
+	    return new Promise(function (resolve, reject) {
+	      var returnableObject = {};
+
+	      fetch(url, fetchOptions).then(function (response) {
+	        debug && console.log("DEBUG[native](response)", response);
+	        // This object is in the shape required by fhir.js lib
+	        Object.assign(returnableObject, {
+	          status: response.status,
+	          headers: response.headers,
+	          config: args,
+	        });
+	        return response;
+	      })
+	      .then(checkStatus)
+	      .then(parseJSON)
+	      .then(function (fhirObject) {
+	        // Merge the
+	        Object.assign(returnableObject, {
+	          data: fhirObject,
+	        });
+	        debug && console.log('DEBUG[native]: (success response)', returnableObject); // eslint-disable-line
+	        resolve(returnableObject);
+	      })
+	      .catch(function(error) {
+	        Object.assign(returnableObject, {
+	          error: error,
+	        });
+	        debug && console.log('DEBUG[native]: rejecting fetch promise');
+	        reject(returnableObject);
+	      });
+	    });
+	  },
+	};
+
+	var buildfhir = function buildfhir(config) {
+	  // debugger;
+	  return mkFhir(config, adapter);
+	};
+	buildfhir.defer = defer;
+	module.exports = buildfhir;
 
 
-/***/ },
+/***/ }),
 /* 1 */
-/***/ function(module, exports, __webpack_require__) {
+/***/ (function(module, exports, __webpack_require__) {
 
 	(function() {
 	    var utils = __webpack_require__(2);
@@ -127,13 +189,14 @@ return /******/ (function(modules) { // webpackBootstrap
 	                .and(auth.$Bearer)
 	                .and(auth.$Credentials)
 	                .and(transport.$JsonData)
-	                .and($$Header('Accept', 'application/json'))
-	                .and($$Header('Content-Type', 'application/json'));
+	                .and($$Header('Accept', (cfg.headers && cfg.headers['Accept']) ? cfg.headers['Accept'] : 'application/json'))
+	                .and($$Header('Content-Type', (cfg.headers && cfg.headers['Content-Type']) ? cfg.headers['Content-Type'] : 'application/json'));
 
 	        var GET = Defaults.and($$Method('GET'));
 	        var POST = Defaults.and($$Method('POST'));
 	        var PUT = Defaults.and($$Method('PUT'));
 	        var DELETE = Defaults.and($$Method('DELETE'));
+	        var PATCH = Defaults.and($$Method('PATCH'));
 
 	        var http = transport.Http(cfg, adapter);
 
@@ -167,18 +230,20 @@ return /******/ (function(modules) { // webpackBootstrap
 	            search: GET.and(resourceTypePath).and(pt.$WithPatient).and(query.$SearchParams).and($Paging).end(http),
 	            update: PUT.and(resourcePath).and(ReturnHeader).end(http),
 	            nextPage: GET.and(bundle.$$BundleLinkUrl("next")).end(http),
-	            prevPage: GET.and(bundle.$$BundleLinkUrl("prev")).end(http),
-	            resolve: GET.and(refs.resolve).end(http)
+	            // For previous page, bundle.link.relation can either have 'previous' or 'prev' values
+	            prevPage: GET.and(bundle.$$BundleLinkUrl("previous")).and(bundle.$$BundleLinkUrl("prev")).end(http),
+	            getBundleByUrl: GET.and(Path(":url")).end(http),
+	            resolve: GET.and(refs.resolve).end(http),
+	            patch: PATCH.and(resourcePath).and($$Header('Content-Type', 'application/json-patch+json')).end(http)
 	        }, adapter);
-
 	    };
 	    module.exports = fhir;
 	}).call(this);
 
 
-/***/ },
+/***/ }),
 /* 2 */
-/***/ function(module, exports, __webpack_require__) {
+/***/ (function(module, exports, __webpack_require__) {
 
 	(function() {
 	  var merge = __webpack_require__(3);
@@ -355,12 +420,12 @@ return /******/ (function(modules) { // webpackBootstrap
 	}).call(this);
 
 
-/***/ },
+/***/ }),
 /* 3 */
-/***/ function(module, exports, __webpack_require__) {
+/***/ (function(module, exports, __webpack_require__) {
 
 	/* WEBPACK VAR INJECTION */(function(module) {/*!
-	 * @name JavaScript/NodeJS Merge v1.1.3
+	 * @name JavaScript/NodeJS Merge v1.2.1
 	 * @author yeikos
 	 * @repository https://github.com/yeikos/js.merge
 	 * Copyright 2014 yeikos - MIT license
@@ -369,31 +434,39 @@ return /******/ (function(modules) { // webpackBootstrap
 
 	;(function(isNode) {
 
-		function merge() {
+		/**
+		 * Merge one or more objects 
+		 * @param bool? clone
+		 * @param mixed,... arguments
+		 * @return object
+		 */
 
-			var items = Array.prototype.slice.call(arguments),
-				result = items.shift(),
-				deep = (result === true),
-				size = items.length,
-				item, index, key;
+		var Public = function(clone) {
 
-			if (deep || typeOf(result) !== 'object')
+			return merge(clone === true, false, arguments);
 
-				result = {};
+		}, publicName = 'merge';
 
-			for (index=0;index<size;++index)
+		/**
+		 * Merge two or more objects recursively 
+		 * @param bool? clone
+		 * @param mixed,... arguments
+		 * @return object
+		 */
 
-				if (typeOf(item = items[index]) === 'object')
+		Public.recursive = function(clone) {
 
-					for (key in item)
+			return merge(clone === true, true, arguments);
 
-						result[key] = deep ? clone(item[key]) : item[key];
+		};
 
-			return result;
+		/**
+		 * Clone the input removing any reference
+		 * @param mixed input
+		 * @return mixed
+		 */
 
-		}
-
-		function clone(input) {
+		Public.clone = function(input) {
 
 			var output = input,
 				type = typeOf(input),
@@ -406,7 +479,7 @@ return /******/ (function(modules) { // webpackBootstrap
 
 				for (index=0;index<size;++index)
 
-					output[index] = clone(input[index]);
+					output[index] = Public.clone(input[index]);
 
 			} else if (type === 'object') {
 
@@ -414,36 +487,124 @@ return /******/ (function(modules) { // webpackBootstrap
 
 				for (index in input)
 
-					output[index] = clone(input[index]);
+					output[index] = Public.clone(input[index]);
 
 			}
 
 			return output;
 
+		};
+
+		/**
+		 * Merge two objects recursively
+		 * @param mixed input
+		 * @param mixed extend
+		 * @return mixed
+		 */
+
+		function merge_recursive(base, extend) {
+
+			if (typeOf(base) !== 'object')
+
+				return extend;
+
+			for (var key in extend) {
+
+				if (typeOf(base[key]) === 'object' && typeOf(extend[key]) === 'object') {
+
+					base[key] = merge_recursive(base[key], extend[key]);
+
+				} else {
+
+					base[key] = extend[key];
+
+				}
+
+			}
+
+			return base;
+
 		}
+
+		/**
+		 * Merge two or more objects
+		 * @param bool clone
+		 * @param bool recursive
+		 * @param array argv
+		 * @return object
+		 */
+
+		function merge(clone, recursive, argv) {
+
+			var result = argv[0],
+				size = argv.length;
+
+			if (clone || typeOf(result) !== 'object')
+
+				result = {};
+
+			for (var index=0;index<size;++index) {
+
+				var item = argv[index],
+
+					type = typeOf(item);
+
+				if (type !== 'object') continue;
+
+				for (var key in item) {
+
+					if (key === '__proto__') continue;
+
+					var sitem = clone ? Public.clone(item[key]) : item[key];
+
+					if (recursive) {
+
+						result[key] = merge_recursive(result[key], sitem);
+
+					} else {
+
+						result[key] = sitem;
+
+					}
+
+				}
+
+			}
+
+			return result;
+
+		}
+
+		/**
+		 * Get type of variable
+		 * @param mixed input
+		 * @return string
+		 *
+		 * @see http://jsperf.com/typeofvar
+		 */
 
 		function typeOf(input) {
 
-			return ({}).toString.call(input).match(/\s([\w]+)/)[1].toLowerCase();
+			return ({}).toString.call(input).slice(8, -1).toLowerCase();
 
 		}
 
 		if (isNode) {
 
-			module.exports = merge;
+			module.exports = Public;
 
 		} else {
 
-			window.merge = merge;
+			window[publicName] = Public;
 
 		}
 
 	})(typeof module === 'object' && module && typeof module.exports === 'object' && module.exports);
 	/* WEBPACK VAR INJECTION */}.call(exports, __webpack_require__(4)(module)))
 
-/***/ },
+/***/ }),
 /* 4 */
-/***/ function(module, exports) {
+/***/ (function(module, exports) {
 
 	module.exports = function(module) {
 		if(!module.webpackPolyfill) {
@@ -457,9 +618,9 @@ return /******/ (function(modules) { // webpackBootstrap
 	}
 
 
-/***/ },
+/***/ }),
 /* 5 */
-/***/ function(module, exports, __webpack_require__) {
+/***/ (function(module, exports, __webpack_require__) {
 
 	(function() {
 	    var utils = __webpack_require__(2);
@@ -544,199 +705,231 @@ return /******/ (function(modules) { // webpackBootstrap
 	}).call(this);
 
 
-/***/ },
+/***/ }),
 /* 6 */
-/***/ function(module, exports, __webpack_require__) {
+/***/ (function(module, exports, __webpack_require__) {
 
 	(function() {
-	    var utils = __webpack_require__(2);
+	  var utils = __webpack_require__(2);
 
-	    var type = utils.type;
+	  var type = utils.type;
 
-	    var assertArray = utils.assertArray;
+	  var assertArray = utils.assertArray;
 
-	    var assertObject = utils.assertObject;
+	  var assertObject = utils.assertObject;
 
-	    var reduceMap = utils.reduceMap;
+	  var reduceMap = utils.reduceMap;
 
-	    var identity = utils.identity;
+	  var identity = utils.identity;
 
-	    var OPERATORS = {
-	        $gt: 'gt',
-	        $lt: 'lt',
-	        $lte: 'lte',
-	        $gte: 'gte'
-	    };
+	  var OPERATORS = {
+	    $gt: 'gt',
+	    $lt: 'lt',
+	    $lte: 'lte',
+	    $gte: 'gte',
+	    $ge: 'ge',
+	    $le: 'le'
+	  };
 
-	    var MODIFIERS = {
-	        $asc: ':asc',
-	        $desc: ':desc',
-	        $exact: ':exact',
-	        $missing: ':missing',
-	        $null: ':missing',
-	        $text: ':text'
-	    };
+	  var MODIFIERS = {
+	    $asc: ':asc',
+	    $desc: ':desc',
+	    $exact: ':exact',
+	    $missing: ':missing',
+	    $null: ':missing',
+	    $text: ':text'
+	  };
 
-	    var isOperator = function(v) {
-	        return v.indexOf('$') === 0;
-	    };
+	  var isOperator = function(v) {
+	    return v.indexOf('$') === 0;
+	  };
 
-	    var expandParam = function(k, v) {
-	        return reduceMap(v, function(acc, arg) {
-	            var kk, o, res, vv;
-	            kk = arg[0], vv = arg[1];
-	            return acc.concat(kk === '$and' ? assertArray(vv).reduce((function(a, vvv) {
-	                return a.concat(linearizeOne(k, vvv));
-	            }), []) : kk === '$type' ? [] : isOperator(kk) ? (o = {
-	                param: k
-	            }, kk === '$or' ? o.value = vv : (OPERATORS[kk] ? o.operator = OPERATORS[kk] : void 0, MODIFIERS[kk] ? o.modifier = MODIFIERS[kk] : void 0, type(vv) === 'object' && vv.$or ? o.value = vv.$or : o.value = [vv]), [o]) : (v.$type ? res = ":" + v.$type : void 0, linearizeOne("" + k + (res || '') + "." + kk, vv)));
-	        });
-	    };
-
-	    var handleSort = function(xs) {
-	        var i, len, results, x;
-	        assertArray(xs);
-	        results = [];
-	        for (i = 0, len = xs.length; i < len; i++) {
-	            x = xs[i];
-	            switch (type(x)) {
-	            case 'array':
-	                results.push({
-	                    param: '_sort',
-	                    value: x[0],
-	                    modifier: ":" + x[1]
-	                });
-	                break;
-	            case 'string':
-	                results.push({
-	                    param: '_sort',
-	                    value: x
-	                });
-	                break;
-	            default:
-	                results.push(void 0);
-	            }
-	        }
-	        return results;
-	    };
-
-	    var handleInclude = function(includes) {
-	        return reduceMap(includes, function(acc, arg) {
-	            var k, v;
-	            k = arg[0], v = arg[1];
-	            return acc.concat((function() {
-	                switch (type(v)) {
-	                case 'array':
-	                    return v.map(function(x) {
-	                        return {
-	                            param: '_include',
-	                            value: k + "." + x
-	                        };
-	                    });
-	                case 'string':
-	                    return [
-	                        {
-	                            param: '_include',
-	                            value: k + "." + v
-	                        }
-	                    ];
-	                }
-	            })());
-	        });
-	    };
-
-	    var linearizeOne = function(k, v) {
-	        if (k === '$sort') {
-	            return handleSort(v);
-	        } else if (k === '$include') {
-	            return handleInclude(v);
-	        } else {
-	            switch (type(v)) {
-	            case 'object':
-	                return expandParam(k, v);
-	            case 'string':
-	                return [
-	                    {
-	                        param: k,
-	                        value: [v]
-	                    }
-	                ];
-	            case 'number':
-	                return [
-	                    {
-	                        param: k,
-	                        value: [v]
-	                    }
-	                ];
-	            case 'array':
-	                return [
-	                    {
-	                        param: k,
-	                        value: [v.join("|")]
-	                    }
-	                ];
-	            default:
-	                throw "could not linearizeParams " + (type(v));
-	            }
-	        }
-	    };
-
-	    var linearizeParams = function(query) {
-	        return reduceMap(query, function(acc, arg) {
-	            var k, v;
-	            k = arg[0], v = arg[1];
-	            return acc.concat(linearizeOne(k, v));
-	        });
-	    };
-
-	    var buildSearchParams = function(query) {
-	        var p, ps;
-	        ps = (function() {
-	            var i, len, ref, results;
-	            ref = linearizeParams(query);
-	            results = [];
-	            for (i = 0, len = ref.length; i < len; i++) {
-	                p = ref[i];
-	                results.push([p.param, p.modifier, '=', p.operator, encodeURIComponent(p.value)].filter(identity).join(''));
-	            }
-	            return results;
-	        })();
-	        return ps.join("&");
-	    };
-
-	    exports._query = linearizeParams;
-
-	    exports.query = buildSearchParams;
-
-	    var mw = __webpack_require__(5);
-
-	    exports.$SearchParams = mw.$$Attr('url', function(args){
-	        var url = args.url;
-	        if(args.query){
-	             var queryStr = buildSearchParams(args.query);
-	             return url + "?" + queryStr;
-	        }
-	        return url;
+	  var expandParam = function(k, v) {
+	    return reduceMap(v, function(acc, arg) {
+	      var kk, o, res, vv;
+	      kk = arg[0], vv = arg[1];
+	      return acc.concat(kk === '$and' ? assertArray(vv).reduce((function(a, vvv) {
+	        return a.concat(linearizeOne(k, vvv));
+	      }), []) : kk === '$type' ? [] : isOperator(kk) ? (o = {
+	        param: k
+	      }, kk === '$or' ? o.value = vv : (OPERATORS[kk] ? o.operator = OPERATORS[kk] : void 0, MODIFIERS[kk] ? o.modifier = MODIFIERS[kk] : void 0, type(vv) === 'object' && vv.$or ? o.value = vv.$or : o.value = [vv]), [o]) : (v.$type ? res = ":" + v.$type : void 0, linearizeOne("" + k + (res || '') + "." + kk, vv)));
 	    });
+	  };
+
+	  var handleSort = function(xs) {
+	    var i, len, results, x;
+	    assertArray(xs);
+	    results = [];
+	    for (i = 0, len = xs.length; i < len; i++) {
+	      x = xs[i];
+	      switch (type(x)) {
+	      case 'array':
+	        results.push({
+	          param: '_sort',
+	          value: x[0],
+	          modifier: ":" + x[1]
+	        });
+	        break;
+	      case 'string':
+	        results.push({
+	          param: '_sort',
+	          value: x
+	        });
+	        break;
+	      default:
+	        results.push(void 0);
+	      }
+	    }
+	    return results;
+	  };
+
+	  var handleInclude = function(includes, key) {
+	    return reduceMap(includes, function(acc, arg) {
+	      var k, v;
+	      k = arg[0], v = arg[1];
+	      return acc.concat((function() {
+	        switch (type(v)) {
+	        case 'array':
+	          return v.map(function(x) {
+	            return {
+	              param: key === '$include' ? '_include' : '_revinclude',
+	              value: k + ":" + x
+	            };
+	          });
+	        case 'string':
+	          return [
+	            {
+	              param: key === '$include' ? '_include' : '_revinclude',
+	              value: k + ":" + v
+	            }
+	          ];
+	        }
+	      })());
+	    });
+	  };
+	  var handleHas = function(includes, key) {
+	    return reduceMap(includes, function(acc, arg) {
+	      var k, v;
+	      k = arg[0], v = arg[1];
+	      return acc.concat((function() {
+	        switch (type(v)) {
+	        case 'array':
+	          return v.map(function(x) {
+	            return {
+	              param: '_has',
+	              value: k + "=" + x
+	            };
+	          });
+	        case 'string':
+	          return [
+	            {
+	              param: '_has',
+	              value: k + "=" + v
+	            }
+	          ];
+	        }
+	      })());
+	    });
+	  };
+	  var linearizeOne = function(k, v) {
+	    if (k === '$sort') {
+	      return handleSort(v);
+	    } else if (k === '$has') {
+	      return handleHas(v, k);
+	    } else if (k === '$include' || k === '$revInclude') {
+	      return handleInclude(v, k);
+	    } else {
+	      switch (type(v)) {
+	      case 'object':
+	        return expandParam(k, v);
+	      case 'string':
+	        return [
+	          {
+	            param: k,
+	            value: [v]
+	          }
+	        ];
+	      case 'number':
+	        return [
+	          {
+	            param: k,
+	            value: [v]
+	          }
+	        ];
+	      case 'array':
+	        return [
+	          {
+	            param: k,
+	            value: [v.join("|")]
+	          }
+	        ];
+	      default:
+	        throw "could not linearizeParams " + (type(v));
+	      }
+	    }
+	  };
+
+	  var linearizeParams = function(query) {
+	    return reduceMap(query, function(acc, arg) {
+	      var k, v;
+	      k = arg[0], v = arg[1];
+	      return acc.concat(linearizeOne(k, v));
+	    });
+	  };
+
+	  var buildSearchParams = function(query) {
+	    var p, ps, value;
+	    var excludeEncode = ['_include', '_revinclude', '_has']
+	    ps = (function() {
+	      var i, len, ref, results;
+	      ref = linearizeParams(query);
+	      results = [];
+	      for (i = 0, len = ref.length; i < len; i++) {
+	        p = ref[i];
+	        if (excludeEncode.indexOf(p.param) === -1)
+	          value = encodeURIComponent(p.value);
+	        else
+	          value = p.value
+	        results.push([p.param, p.modifier, (p.param == '_has') ? ':' : '=', p.operator, value].filter(identity).join(''));
+	      }
+	      return results;
+	    })();
+	    return ps.join("&");
+	  };
+
+	  exports._query = linearizeParams;
+
+	  exports.query = buildSearchParams;
+
+	  var mw = __webpack_require__(5);
+
+	  exports.$SearchParams = mw.$$Attr('url', function(args){
+	    var url = args.url;
+	    if(args.query){
+	      var queryStr = buildSearchParams(args.query);
+	      return url + "?" + queryStr;
+	    }
+	    return url;
+	  });
 
 
-	    exports.$Paging = function(h){
-	        return function(args){
-	            var params = args.params || {};
-	            if(args.since){params._since = args.since;}
-	            if(args.count){params._count = args.count;}
-	            args.params = params;
-	            return h(args);
-	        };
+	  exports.$Paging = function(h){
+	    return function(args){
+	      var params = args.params || {};
+	      if(args.since){params._since = args.since;}
+	      if(args.count){params._count = args.count;}
+	      args.params = params;
+	      return h(args);
 	    };
+	  };
 
 
 	}).call(this);
 
 
-/***/ },
+/***/ }),
 /* 7 */
-/***/ function(module, exports, __webpack_require__) {
+/***/ (function(module, exports, __webpack_require__) {
 
 	(function() {
 	    var mw = __webpack_require__(5);
@@ -775,9 +968,9 @@ return /******/ (function(modules) { // webpackBootstrap
 	}).call(this);
 
 
-/***/ },
+/***/ }),
 /* 8 */
-/***/ function(module, exports, __webpack_require__) {
+/***/ (function(module, exports, __webpack_require__) {
 
 	;(function () {
 
@@ -842,9 +1035,9 @@ return /******/ (function(modules) { // webpackBootstrap
 	}());
 
 
-/***/ },
+/***/ }),
 /* 9 */
-/***/ function(module, exports, __webpack_require__) {
+/***/ (function(module, exports, __webpack_require__) {
 
 	(function() {
 	    var utils = __webpack_require__(2);
@@ -863,7 +1056,7 @@ return /******/ (function(modules) { // webpackBootstrap
 	    };
 
 	    var toJson = function(x){
-	        return (utils.type(x) == 'object') ? JSON.stringify(x) : x;
+	        return (utils.type(x) == 'object' || utils.type(x) == 'array') ? JSON.stringify(x) : x;
 	    };
 
 	    exports.$JsonData = function(h){
@@ -879,9 +1072,9 @@ return /******/ (function(modules) { // webpackBootstrap
 	}).call(this);
 
 
-/***/ },
+/***/ }),
 /* 10 */
-/***/ function(module, exports) {
+/***/ (function(module, exports) {
 
 	module.exports = function(h){
 	    return function(args){
@@ -907,9 +1100,9 @@ return /******/ (function(modules) { // webpackBootstrap
 	};
 
 
-/***/ },
+/***/ }),
 /* 11 */
-/***/ function(module, exports) {
+/***/ (function(module, exports) {
 
 	(function() {
 	    var copyAttr = function(from, to, attr){
@@ -926,6 +1119,9 @@ return /******/ (function(modules) { // webpackBootstrap
 	                copyAttr(cfg, args, 'auth');
 	                copyAttr(cfg, args, 'patient');
 	                copyAttr(cfg, args, 'debug');
+	                copyAttr(cfg, args, 'credentials');
+	                copyAttr(cfg, args, 'headers');
+	                copyAttr(cfg, args, 'agentOptions');
 	                copyAttr(adapter, args, 'defer');
 	                copyAttr(adapter, args, 'http');
 	                return h(args);
@@ -935,9 +1131,9 @@ return /******/ (function(modules) { // webpackBootstrap
 	}).call(this);
 
 
-/***/ },
+/***/ }),
 /* 12 */
-/***/ function(module, exports) {
+/***/ (function(module, exports) {
 
 	exports.$$BundleLinkUrl =  function(rel){
 	    return function(h) {
@@ -947,19 +1143,16 @@ return /******/ (function(modules) { // webpackBootstrap
 	            if(res && res.url){
 	                args.url = res.url;
 	                args.data = null;
-	                return h(args);
 	            }
-	            else{
-	                throw new Error("No " + rel + " link found in bundle");
-	            }
+	            return h(args);
 	        };
 	    };
 	};
 
 
-/***/ },
+/***/ }),
 /* 13 */
-/***/ function(module, exports, __webpack_require__) {
+/***/ (function(module, exports, __webpack_require__) {
 
 	(function() {
 	    var mw = __webpack_require__(5);
@@ -1033,9 +1226,9 @@ return /******/ (function(modules) { // webpackBootstrap
 	}).call(this);
 
 
-/***/ },
+/***/ }),
 /* 14 */
-/***/ function(module, exports, __webpack_require__) {
+/***/ (function(module, exports, __webpack_require__) {
 
 	(function() {
 	    var utils = __webpack_require__(2);
@@ -1091,9 +1284,9 @@ return /******/ (function(modules) { // webpackBootstrap
 	}).call(this);
 
 
-/***/ },
+/***/ }),
 /* 15 */
-/***/ function(module, exports, __webpack_require__) {
+/***/ (function(module, exports, __webpack_require__) {
 
 	(function() {
 	    var utils = __webpack_require__(2);
@@ -1152,9 +1345,9 @@ return /******/ (function(modules) { // webpackBootstrap
 	}).call(this);
 
 
-/***/ },
+/***/ }),
 /* 16 */
-/***/ function(module, exports) {
+/***/ (function(module, exports) {
 
 	(function() {
 	    var fhirAPI;
@@ -1221,32 +1414,10 @@ return /******/ (function(modules) { // webpackBootstrap
 
 	                var resolvedReferences = {};
 
-	                var queue = [function() {
-	                    var entries = results.data.entry || [];
-	                    var res = entries.map(function(r){
-	                        return r.resource;
-	                    });
-	                    var refs = function (resource, reference) {
-	                        var refID = normalizeRefID(resource,reference);
-	                        return resolvedReferences[refID];
-	                    };
-	                    ret.resolve(res,refs);
-	                }];
-
-	                function normalizeRefID (resource, reference) {
-	                    var refID = reference.reference;
-	                    if (refID.startsWith('#')) {
-	                        var resourceID = resource.resourceType + "/" + resource.id;
-	                        return resourceID + refID;
-	                    } else {
-	                        return refID;
-	                    }
-	                }
+	                var queue = [function() {ret.resolve(results, resolvedReferences);}];
 	                
 	                function enqueue (bundle,resource,reference) {
-	                  queue.push(function() {
-	                    resolveReference(bundle,resource,reference);
-	                  });
+	                  queue.push(function() {resolveReference(bundle,resource,reference)});
 	                }
 
 	                function next() {
@@ -1254,10 +1425,10 @@ return /******/ (function(modules) { // webpackBootstrap
 	                }
 
 	                function resolveReference (bundle,resource,reference) {
-	                    var refID = normalizeRefID(resource,reference);
+	                    var referenceID = reference.reference;
 	                    fhirAPI.resolve({'bundle': bundle, 'resource': resource, 'reference':reference}).then(function(res){
 	                      var referencedObject = res.data || res.content;
-	                      resolvedReferences[refID] = referencedObject;
+	                      resolvedReferences[referenceID] = referencedObject;
 	                      next();
 	                    });
 	                }
@@ -1289,7 +1460,7 @@ return /******/ (function(modules) { // webpackBootstrap
 	          
 	        return ret.promise;
 	    };
-
+	    
 	    function decorate (client, newAdapter) {
 	        fhirAPI = client;
 	        adapter = newAdapter;
@@ -1302,7 +1473,8 @@ return /******/ (function(modules) { // webpackBootstrap
 	    module.exports = decorate;
 	}).call(this);
 
-/***/ }
+/***/ })
 /******/ ])
 });
 ;
+// $lab:coverage:on$
