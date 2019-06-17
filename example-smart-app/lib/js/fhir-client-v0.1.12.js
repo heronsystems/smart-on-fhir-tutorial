@@ -16940,6 +16940,7 @@ function getPreviousToken(){
     return JSON.parse(token);
   } else {
     var state = urlParam('state');
+    console.log("16943 state", state)
     return JSON.parse(sessionStorage[state]).tokenResponse;
   }
 }
@@ -16976,6 +16977,8 @@ function completeCodeFlow(params){
   }
   
   var ret = Adapter.get().defer();
+  console.log("params", params)
+  console.log("sessionStorage", sessionStorage)
   var state = JSON.parse(sessionStorage[params.state]);
 
   if (window.history.replaceState && BBClient.settings.replaceBrowserHistory){
