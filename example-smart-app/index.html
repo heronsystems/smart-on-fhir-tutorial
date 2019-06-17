@@ -80,6 +80,9 @@
     <!-- <script src='./lib/js/fhir-client-v0.1.12.js'></script> -->
     <script src='./lib/js/fhir-client-v2.0.0.js'></script>
     <script src='./lib/js/fhir.js'></script>
+    <script>
+      FHIR.oauth2.ready().then(client => client.api.search({ type: "Patient" }))
+    </script>
 
     <!-- Prevent session bleed caused by single threaded embedded browser and sessionStorage API -->
     <!-- https://github.com/cerner/fhir-client-cerner-additions -->
