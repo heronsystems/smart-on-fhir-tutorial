@@ -16907,7 +16907,11 @@ function urlParam(p, forceArray) {
     var item = data[i].split("=");
     if (item[0] === p) {
       var res = item[1].replace(/\+/g, '%20');
-      result.push(decodeURIComponent(res));
+      var component = res
+      if (decodeURI(res) !== decodeURIComponent(res)) {
+        res = decodeURIComponent(res)
+      }
+      result.push(res);
     }
   }
 
